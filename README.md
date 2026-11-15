@@ -1,338 +1,311 @@
-# 💬 چت‌روم بلادرنگ کلاسی (ClassChatApp)
+# 💬 چت‌روم بلادرنگ کلاسی (ClassChatApp) — نسخه ۲
 
-یک چت‌روم **سرورلس** روی AWS با پشتیبانی از پیام عمومی، پیام خصوصی و تاریخچه گفتگو. ورود کاربران با Cognito انجام می‌شود، ارتباط زنده با WebSocket برقرار است و داده‌ها در DynamoDB ذخیره می‌شوند.
+یک چت‌روم **سرورلس** روی AWS با گفتگوی عمومی، پیام خصوصی، گروه و کانال (با مدیریت و لینک دعوت)، جستجوی کاربران و تاریخچه پیام‌ها. ثبت‌نام و ورود بدون نیاز به تأیید ایمیل یا تأیید دستی است.
 
 ---
 
 ## 📑 فهرست
 
-1. [نمای کلی](#-نمای-کلی)
-2. [دیاگرام معماری](#-دیاگرام-معماری)
-3. [دیاگرام توالی پیام‌ها](#-دیاگرام-توالی-پیامها)
+1. [نمای کلی و قابلیت‌ها](#-نمای-کلی-و-قابلیتها)
+2. [معماری](#-معماری)
+3. [مدل داده (یک جدول)](#-مدل-داده-یک-جدول)
 4. [مرحله ۱: DynamoDB](#-مرحله-۱-dynamodb)
-5. [مرحله ۲: IAM](#-مرحله-۲-iam)
-6. [مرحله ۳: Lambda](#-مرحله-۳-lambda)
-7. [مرحله ۴: Cognito](#-مرحله-۴-cognito)
-8. [مرحله ۵: API Gateway](#-مرحله-۵-api-gateway)
-9. [مرحله ۶: S3](#-مرحله-۶-s3)
-10. [فرمت پیام‌ها](#-فرمت-پیامها)
-11. [نکات و بهبودها](#-نکات-و-بهبودها)
+5. [مرحله ۲: Cognito](#-مرحله-۲-cognito)
+6. [مرحله ۳: IAM](#-مرحله-۳-iam)
+7. [مرحله ۴: Lambda](#-مرحله-۴-lambda)
+8. [مرحله ۵: اتصال Trigger به Cognito](#-مرحله-۵-اتصال-trigger-به-cognito)
+9. [مرحله ۶: API Gateway](#-مرحله-۶-api-gateway)
+10. [مرحله ۷: index.html و S3](#-مرحله-۷-indexhtml-و-s3)
+11. [تست نهایی](#-تست-نهایی)
+12. [پروتکل پیام‌ها](#-پروتکل-پیامها)
+13. [نکات Free Tier](#-نکات-free-tier)
+14. [عیب‌یابی](#-عیبیابی)
+15. [تغییرات نسبت به نسخه قبل](#-تغییرات-نسبت-به-نسخه-قبل)
 
 ---
 
-## 🧭 نمای کلی
+## 🧭 نمای کلی و قابلیت‌ها
 
 | سرویس | نقش در پروژه |
-|---|---|
-| **S3** | میزبانی فایل `index.html` (فرانت‌اند) به‌صورت وب‌سایت استاتیک |
+| ----- | ------------ |
+| **S3** (و اختیاری CloudFront) | میزبانی فایل `index.html` |
 | **Cognito** | ثبت‌نام و ورود کاربران |
-| **API Gateway (WebSocket)** | نگه‌داشتن اتصال زنده و مسیریابی پیام‌ها بر اساس فیلد `action` |
-| **Lambda** | سه تابع برای اتصال، قطع اتصال و ارسال پیام |
-| **DynamoDB** | ذخیره اتصال‌های فعال و پیام‌های چت |
-| **IAM** | دسترسی Lambda به DynamoDB و API Gateway |
+| **API Gateway (WebSocket)** | اتصال زنده و مسیریابی پیام‌ها |
+| **Lambda** | **یک تابع** برای همه کارها (اتصال، قطع اتصال، پیام‌ها و Trigger ثبت‌نام) |
+| **DynamoDB** | **یک جدول** برای کاربران، اتصال‌ها، گروه‌ها و پیام‌ها |
+| **IAM** | دسترسی حداقلی Lambda |
 
 **قابلیت‌ها**
 
-- پیام عمومی برای همه کاربران آنلاین
-- پیام خصوصی بین دو کاربر
-- نمایش ۵۰ پیام تاریخچه هنگام ورود
-- بدون نیاز به سرور و مدیریت زیرساخت
+- گفتگوی عمومی برای همه
+- پیام خصوصی با جستجوی کاربر بر اساس شناسه، یا کلیک روی نام فرستنده
+- فهرست کاربران آنلاین
+- گروه (همه می‌نویسند) و کانال (فقط مدیران می‌نویسند)
+- نقش‌ها: مالک، مدیر، عضو؛ حذف عضو، ارتقا و عزل مدیر، خروج و حذف گروه
+- لینک دعوت (`#join=کد`) با امکان ساخت لینک جدید
+- تاریخچه ۳۰ پیام آخر و دکمه «پیام‌های قبلی»
+- شمارنده پیام‌های خوانده‌نشده و اتصال مجدد خودکار
 
 ---
 
-## 🏗 دیاگرام معماری
+## 🏗 معماری
 
 ```mermaid
 flowchart LR
-    U["👤 کاربر (مرورگر)"]
-    S3["🪣 S3<br/>Static Website<br/>index.html"]
-    COG["🔐 Cognito<br/>User Pool"]
-    APIGW["🌐 API Gateway<br/>WebSocket API"]
-
-    subgraph LAMBDAS["⚡ توابع Lambda"]
-        L1["ChatConnect"]
-        L2["ChatDisconnect"]
-        L3["ChatSendMessage"]
-    end
-
-    subgraph DDB["🗄 DynamoDB"]
-        T1[("ChatConnections<br/>PK: connectionId")]
-        T2[("ChatMessages<br/>PK: room / SK: timestamp")]
-    end
-
-    IAM["🛡 IAM Role<br/>ChatLambdaRole"]
-
-    U -->|"۱. دریافت صفحه"| S3
-    U -->|"۲. ورود"| COG
-    U <-->|"۳. اتصال WebSocket"| APIGW
-
-    APIGW -->|"$connect"| L1
-    APIGW -->|"$disconnect"| L2
-    APIGW -->|"$default (action)"| L3
-
-    L1 -->|"put_item"| T1
-    L2 -->|"delete_item"| T1
-    L3 -->|"update / scan"| T1
-    L3 -->|"put / query"| T2
-    L3 -.->|"post_to_connection"| APIGW
-
-    IAM -.->|"دسترسی"| LAMBDAS
+    U["👤 مرورگر"] -->|"۱. دریافت صفحه"| S3["🪣 S3 / CloudFront"]
+    U -->|"۲. ثبت‌نام و ورود"| COG["🔐 Cognito"]
+    U <-->|"۳. WebSocket + توکن"| APIGW["🌐 API Gateway"]
+    COG -.->|"Pre sign-up"| L["⚡ Lambda: ChatHandler"]
+    APIGW -->|"$connect / $disconnect / $default"| L
+    L <--> DDB[("🗄 DynamoDB: ChatApp")]
+    L -.->|"post_to_connection"| APIGW
 ```
+
+توکن Cognito هنگام اتصال به‌صورت `?token=` فرستاده می‌شود و Lambda امضای آن را بررسی می‌کند. نام کاربری هیچ‌وقت از سمت کلاینت پذیرفته نمی‌شود.
 
 ---
 
-## 🔁 دیاگرام توالی پیام‌ها
+## 🗄 مدل داده (یک جدول)
 
-```mermaid
-sequenceDiagram
-    autonumber
-    actor A as کاربر الف
-    actor B as کاربر ب
-    participant GW as API Gateway
-    participant L as Lambda
-    participant C as ChatConnections
-    participant M as ChatMessages
+جدول `ChatApp` با کلید `PK` و `SK` و یک ایندکس `GSI1` (کلیدهای `GSI1PK` و `GSI1SK`):
 
-    A->>GW: اتصال WebSocket
-    GW->>L: ChatConnect
-    L->>C: ذخیره connectionId
+| داده | PK | SK | GSI1PK / GSI1SK |
+| ---- | -- | -- | --------------- |
+| پروفایل کاربر | `USER#نام` | `PROFILE` | `USERS` / نام (برای جستجو) |
+| فهرست پیام‌های خصوصی | `USER#نام` | `DM#طرف‌مقابل` | ندارد |
+| اتصال فعال | `CONN#id` | `META` | `ONLINE` / id (برای آنلاین‌ها) |
+| اطلاعات گروه | `ROOM#id` | `META` | ندارد |
+| عضو گروه | `ROOM#id` | `MEMBER#نام` | `UROOM#نام` / id گروه |
+| لینک دعوت | `INVITE#کد` | `META` | ندارد |
+| پیام | `CHAT#شناسه‌گفتگو` | `MSG#زمان#تصادفی` | ندارد |
 
-    A->>GW: action = auth_and_history
-    GW->>L: ChatSendMessage
-    L->>C: ذخیره username
-    L->>M: خواندن تاریخچه
-    L-->>A: پیام history
-
-    A->>GW: action = send_public
-    GW->>L: ChatSendMessage
-    L->>M: ذخیره پیام
-    L->>C: دریافت همه اتصال‌ها
-    L-->>A: ارسال پیام
-    L-->>B: ارسال پیام
-
-    A->>GW: action = send_private (targetUser = ب)
-    GW->>L: ChatSendMessage
-    L->>C: پیدا کردن اتصال کاربر ب
-    L-->>B: پیام خصوصی
-    L-->>A: نسخه‌ای برای فرستنده
-
-    A->>GW: قطع اتصال
-    GW->>L: ChatDisconnect
-    L->>C: حذف connectionId
-```
+شناسه گفتگو: `public` برای عمومی، `room:<id>` برای گروه و کانال، `dm:<نامA>:<نامB>` (به ترتیب الفبا) برای خصوصی.
 
 ---
 
 ## 🗄 مرحله ۱: DynamoDB
 
-دو جدول بسازید:
-
-| نام جدول | Partition key | Sort key |
-|---|---|---|
-| `ChatConnections` | `connectionId` (String) | ندارد |
-| `ChatMessages` | `room` (String) | `timestamp` (Number) |
-
-> در `ChatMessages` مقدار `room` فعلاً همیشه `public` است و `timestamp` به میلی‌ثانیه ذخیره می‌شود.
-
----
-
-## 🛡 مرحله ۲: IAM
-
-1. به **IAM → Roles → Create role** بروید.
-2. گزینه **AWS service** و سپس **Lambda** را انتخاب کنید.
-3. این دو Policy را اضافه کنید:
-   - `AmazonDynamoDBFullAccess`
-   - `AmazonAPIGatewayInvokeFullAccess`
-4. نام نقش را `ChatLambdaRole` بگذارید و بسازید.
+1. **DynamoDB → Tables → Create table**
+2. نام جدول: `ChatApp`، Partition key: `PK` (String)، Sort key: `SK` (String)
+3. در **Table settings** گزینه **Customize settings** را بزنید.
+4. در **Read/write capacity settings** حالت **Provisioned** را انتخاب کنید، **Auto scaling** را برای هر دو خاموش کنید و مقدار **۱۰** برای Read و **۱۰** برای Write بگذارید. (حالت On-demand جزو سهمیه همیشه‌رایگان نیست.)
+5. جدول را بسازید.
+6. وارد جدول شوید: **Indexes → Create index**
+   - Partition key: `GSI1PK` (String)، Sort key: `GSI1SK` (String)
+   - Index name: `GSI1`، Projection: **All**
+   - ظرفیت Provisioned برابر **۵** و **۵**
+7. **Additional settings → Time to Live (TTL) → Turn on** و نام صفت را `expiresAt` بگذارید. با این کار اتصال‌های مرده و پیام‌های قدیمی (بعد از ۳۰ روز) خودکار پاک می‌شوند.
 
 ---
 
-## ⚡ مرحله ۳: Lambda
+## 🔐 مرحله ۲: Cognito
 
-برای هر سه تابع این تنظیمات یکسان است:
+1. **Cognito → Create user pool**
+2. نوع برنامه: **Single-page application (SPA)**، نام: `ClassChatApp`
+3. Sign-in identifiers: فقط **User name**
+4. Required attributes: همان `email` پیش‌فرض بماند (صفحه به‌صورت خودکار یک ایمیل ساختگی می‌فرستد)
+5. Return URL: `http://localhost` (فقط برای ساخت لازم است)
+6. پس از ساخت، رمز را ساده‌تر کنید: **Authentication → Authentication methods → Password policy → Edit** → حالت **Custom**، حداقل طول **۶** و همه تیک‌های الزامی (عدد، حروف بزرگ و ...) خاموش.
+7. **MFA** را روی **No MFA** بگذارید.
+8. در بخش **Sign-up**، گزینه ارسال پیام برای تأیید (Attribute verification) را **Disable** کنید.
+9. مقدار **User pool ID** (از Overview) و **Client ID** (از App clients) را یادداشت کنید.
 
-- Runtime: **Python 3.12**
-- در بخش **Change default execution role** گزینه **Use an existing role** و نقش `ChatLambdaRole` را انتخاب کنید.
-
-### ۳.۱ تابع ChatConnect
-
-با برقراری اتصال، شناسه اتصال را در جدول ذخیره می‌کند.
-
-```python
-import boto3
-
-dynamodb = boto3.client('dynamodb')
-
-def lambda_handler(event, context):
-    conn_id = event['requestContext']['connectionId']
-    dynamodb.put_item(TableName='ChatConnections', Item={'connectionId': {'S': conn_id}})
-    return {'statusCode': 200}
-```
-
-### ۳.۲ تابع ChatDisconnect
-
-با قطع اتصال، رکورد مربوطه را حذف می‌کند.
-
-```python
-import boto3
-
-dynamodb = boto3.client('dynamodb')
-
-def lambda_handler(event, context):
-    conn_id = event['requestContext']['connectionId']
-    dynamodb.delete_item(TableName='ChatConnections', Key={'connectionId': {'S': conn_id}})
-    return {'statusCode': 200}
-```
-
-### ۳.۳ تابع ChatSendMessage
-
-مغز اصلی پروژه است و سه `action` را پشتیبانی می‌کند:
-
-| action | کار |
-|---|---|
-| `auth_and_history` | ذخیره نام کاربری روی اتصال و ارسال تاریخچه |
-| `send_public` | ذخیره پیام و ارسال برای همه اتصال‌ها |
-| `send_private` | ارسال پیام فقط به کاربر هدف و خود فرستنده |
-
-```python
-import boto3
-import json
-import time
-from boto3.dynamodb.conditions import Key
-
-dynamodb = boto3.resource('dynamodb')
-connections_table = dynamodb.Table('ChatConnections')
-messages_table = dynamodb.Table('ChatMessages')
-
-def lambda_handler(event, context):
-    domain = event['requestContext']['domainName']
-    stage = event['requestContext']['stage']
-    conn_id = event['requestContext']['connectionId']
-    apigw = boto3.client('apigatewaymanagementapi', endpoint_url=f"https://{domain}/{stage}")
-
-    body = json.loads(event.get('body', '{}'))
-    action = body.get('action')
-    username = body.get('username', 'ناشناس')
-
-    if action == 'auth_and_history':
-        connections_table.update_item(
-            Key={'connectionId': conn_id},
-            UpdateExpression="SET username = :u",
-            ExpressionAttributeValues={':u': username}
-        )
-        response = messages_table.query(
-            KeyConditionExpression=Key('room').eq('public'),
-            ScanIndexForward=True,
-            Limit=50
-        )
-        clean_messages = [{'username': i.get('username', 'ناشناس'), 'message': i.get('message', '')} for i in response.get('Items', [])]
-        history = json.dumps({'type': 'history', 'messages': clean_messages})
-        apigw.post_to_connection(ConnectionId=conn_id, Data=history)
-
-    elif action == 'send_public':
-        msg = body.get('message')
-        ts = int(time.time() * 1000)
-        messages_table.put_item(Item={'room': 'public', 'timestamp': ts, 'username': username, 'message': msg})
-        formatted_msg = json.dumps({'type': 'public', 'username': username, 'message': msg})
-        for item in connections_table.scan().get('Items', []):
-            try: apigw.post_to_connection(ConnectionId=item['connectionId'], Data=formatted_msg)
-            except: pass
-
-    elif action == 'send_private':
-        target_user = body.get('targetUser')
-        formatted_msg = json.dumps({'type': 'private', 'username': username, 'message': body.get('message')})
-        for item in connections_table.scan().get('Items', []):
-            if item.get('username') == target_user or item['connectionId'] == conn_id:
-                try: apigw.post_to_connection(ConnectionId=item['connectionId'], Data=formatted_msg)
-                except: pass
-
-    return {'statusCode': 200}
-```
+> نام منوها در کنسول AWS گاهی تغییر می‌کند؛ اگر دقیقاً مطابق متن نبود، همین گزینه‌ها را در همان بخش‌ها جستجو کنید.
 
 ---
 
-## 🔐 مرحله ۴: Cognito
+## 🛡 مرحله ۳: IAM
 
-1. **Create user pool** و سپس نوع برنامه را **Single-page application (SPA)** انتخاب کنید.
-2. نام برنامه: `ClassChatApp`
-3. گزینه ورود: **Username** و **Email**
-4. از بخش **Overview** مقدار `UserPoolID` را کپی کنید.
-5. در بخش **Sign-up → Attribute verification** گزینه تأیید را **Disable** کنید.
-6. از بخش **App client** مقدار `ClientID` را کپی کنید.
-7. کاربران را به‌صورت دستی بسازید و **Confirm** کنید.
-
-> هر دو مقدار `UserPoolID` و `ClientID` داخل `index.html` استفاده می‌شوند.
-
----
-
-## 🌐 مرحله ۵: API Gateway
-
-1. **WebSocket API → Build** را بزنید.
-2. نام: `ClassChatAPI`
-3. Route selection expression: `$request.body.action`
-4. هر سه مسیر پیش‌فرض را فعال کنید و به Lambda وصل کنید:
-
-| مسیر | تابع Lambda |
-|---|---|
-| `$connect` | `ChatConnect` |
-| `$disconnect` | `ChatDisconnect` |
-| `$default` | `ChatSendMessage` |
-
-5. پس از Deploy، از بخش **Stages** آدرس **WebSocket URL** را کپی کنید (داخل `index.html` لازم است).
-
----
-
-## 🪣 مرحله ۶: S3
-
-1. یک Bucket بسازید.
-2. تیک **Block all public access** را بردارید.
-3. فایل `index.html` را آپلود کنید.
-4. در **Properties → Static website hosting** گزینه را فعال کنید و `index.html` را به‌عنوان صفحه اصلی بدهید.
-5. آدرس وب‌سایت را کپی کنید.
-6. در **Permissions → Bucket policy** این Policy را بگذارید (به‌جای `YOUR_BUCKET_NAME` نام Bucket خودتان را بنویسید):
+1. **IAM → Policies → Create policy → JSON** و این متن را بگذارید (مقدار `REGION` و `ACCOUNT_ID` را عوض کنید، مثلاً `eu-north-1`):
 
 ```json
 {
-    "Version": "2012-10-17",
-    "Statement": [
-        {
-            "Sid": "PublicReadGetObject",
-            "Effect": "Allow",
-            "Principal": "*",
-            "Action": "s3:GetObject",
-            "Resource": "arn:aws:s3:::YOUR_BUCKET_NAME/*"
-        }
-    ]
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Action": [
+        "dynamodb:GetItem",
+        "dynamodb:PutItem",
+        "dynamodb:UpdateItem",
+        "dynamodb:DeleteItem",
+        "dynamodb:Query",
+        "dynamodb:BatchWriteItem"
+      ],
+      "Resource": [
+        "arn:aws:dynamodb:REGION:ACCOUNT_ID:table/ChatApp",
+        "arn:aws:dynamodb:REGION:ACCOUNT_ID:table/ChatApp/index/GSI1"
+      ]
+    },
+    {
+      "Effect": "Allow",
+      "Action": "execute-api:ManageConnections",
+      "Resource": "arn:aws:execute-api:REGION:ACCOUNT_ID:*/*"
+    }
+  ]
 }
 ```
 
----
-
-## 📨 فرمت پیام‌ها
-
-**از کلاینت به سرور**
-
-```json
-{ "action": "auth_and_history", "username": "ali" }
-{ "action": "send_public", "username": "ali", "message": "سلام" }
-{ "action": "send_private", "username": "ali", "targetUser": "sara", "message": "سلام سارا" }
-```
-
-**از سرور به کلاینت**
-
-```json
-{ "type": "history", "messages": [{ "username": "ali", "message": "سلام" }] }
-{ "type": "public", "username": "ali", "message": "سلام" }
-{ "type": "private", "username": "ali", "message": "سلام سارا" }
-```
+2. نام Policy را `ChatAppAccess` بگذارید.
+3. **IAM → Roles → Create role → AWS service → Lambda** و این دو Policy را اضافه کنید:
+   - `ChatAppAccess`
+   - `AWSLambdaBasicExecutionRole` (برای نوشتن لاگ در CloudWatch؛ بدون آن عیب‌یابی تقریباً ممکن نیست)
+4. نام نقش: `ChatLambdaRole`
 
 ---
 
-## 💡 نکات و بهبودها
+## ⚡ مرحله ۴: Lambda
 
-- **ترتیب تاریخچه:** با `ScanIndexForward=True` و `Limit=50`، قدیمی‌ترین ۵۰ پیام برمی‌گردد. برای گرفتن ۵۰ پیام آخر، مقدار را `False` کنید و لیست نتیجه را معکوس کنید.
-- **تکرار نام کاربری:** پیام خصوصی بر اساس `username` مسیریابی می‌شود. اگر دو اتصال نام یکسان داشته باشند، هر دو پیام را می‌گیرند.
-- **اعتبارسنجی توکن:** Cognito فقط در فرانت‌اند استفاده شده و Lambda توکن را بررسی نمی‌کند. برای امنیت بیشتر می‌توان یک Authorizer روی `$connect` گذاشت.
-- **دسترسی‌ها:** `AmazonDynamoDBFullAccess` برای آموزش مناسب است، ولی در پروژه واقعی بهتر است فقط روی دو جدول همین پروژه محدود شود.
-- **مقیاس‌پذیری:** استفاده از `scan` روی `ChatConnections` برای کلاس کوچک کافی است، ولی با رشد کاربران باید جایگزین شود.
-- **خطاها:** بلوک `except: pass` اتصال‌های قطع‌شده را بی‌صدا نادیده می‌گیرد؛ می‌توانید رکورد آن‌ها را هم پاک کنید.
+1. **Lambda → Create function → Author from scratch**
+2. نام: `ChatHandler`، Runtime: **Python 3.12**
+3. در **Change default execution role** گزینه **Use an existing role** و `ChatLambdaRole` را انتخاب کنید.
+4. محتوای فایل `lambda_function.py` را در ویرایشگر کد جایگزین کنید و **Deploy** بزنید. (Handler پیش‌فرض یعنی `lambda_function.lambda_handler` درست است و به Layer یا بسته اضافه نیاز نیست.)
+5. **Configuration → General configuration → Edit**: Memory برابر **256 MB** و Timeout برابر **15 sec**.
+6. **Configuration → Environment variables** این‌ها را اضافه کنید:
+
+| نام متغیر | مقدار |
+| --------- | ----- |
+| `TABLE_NAME` | `ChatApp` |
+| `USER_POOL_ID` | شناسه User pool از مرحله ۲ |
+| `CLIENT_ID` | شناسه App client از مرحله ۲ |
+| `COGNITO_REGION` | ریجن Cognito (مثلاً `eu-north-1`) |
+
+---
+
+## 🔗 مرحله ۵: اتصال Trigger به Cognito
+
+این مرحله باعث می‌شود ثبت‌نام بدون تأیید ایمیل و بدون تأیید دستی انجام شود. همان Lambda قبلی این کار را هم انجام می‌دهد، پس تابع جدیدی لازم نیست.
+
+1. **Cognito → User pool → Extensions → Add Lambda trigger**
+2. Trigger type: **Sign-up** و نوع: **Pre sign-up trigger**
+3. تابع `ChatHandler` را انتخاب و ذخیره کنید. (کنسول خودش اجازه فراخوانی را به Lambda اضافه می‌کند.)
+
+> اگر در اکانت شما اضافه کردن Trigger ممکن نبود، راه جایگزین: بعد از هر ثبت‌نام، کاربر را از **Users → نام کاربر → Actions → Confirm account** تأیید کنید.
+
+---
+
+## 🌐 مرحله ۶: API Gateway
+
+1. **API Gateway → Create API → WebSocket API → Build**
+2. نام: `ClassChatAPI`، Route selection expression: `$request.body.action`
+3. سه مسیر را به یک تابع `ChatHandler` وصل کنید:
+
+| مسیر | تابع Lambda |
+| ---- | ----------- |
+| `$connect` | `ChatHandler` |
+| `$disconnect` | `ChatHandler` |
+| `$default` | `ChatHandler` |
+
+4. نام Stage: `production` و سپس **Deploy**
+5. آدرس **WebSocket URL** را از Stage کپی کنید (به شکل `wss://...amazonaws.com/production`).
+6. اختیاری ولی مفید: در **Stages → production → Default route throttling** مقدار Rate را ۲۰ و Burst را ۴۰ بگذارید تا سوءاستفاده یا باگ کلاینت، سهمیه رایگان را مصرف نکند.
+
+---
+
+## 🪣 مرحله ۷: index.html و S3
+
+1. در فایل `index.html` بخش `CONFIG` را ویرایش کنید:
+
+```js
+const CONFIG = {
+  wsUrl: 'wss://API_ID.execute-api.REGION.amazonaws.com/production',
+  userPoolId: 'REGION_xxxxxxxxx',
+  clientId: 'xxxxxxxxxxxxxxxxxxxxxxxxxx'
+};
+```
+
+2. یک Bucket بسازید و **Block all public access** را بردارید.
+3. فایل `index.html` را آپلود کنید.
+4. در **Properties → Static website hosting** را فعال و `index.html` را صفحه اصلی کنید.
+5. در **Permissions → Bucket policy** این Policy را بگذارید (به‌جای `YOUR_BUCKET_NAME` نام Bucket):
+
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "PublicReadGetObject",
+      "Effect": "Allow",
+      "Principal": "*",
+      "Action": "s3:GetObject",
+      "Resource": "arn:aws:s3:::YOUR_BUCKET_NAME/*"
+    }
+  ]
+}
+```
+
+> آدرس وب‌سایت S3 فقط HTTP است. برای نمایش پروژه کافی است، ولی توکن ورود روی HTTP امن نیست. اگر خواستید HTTPS داشته باشید، یک Distribution در **CloudFront** با Origin همین Bucket بسازید (Origin access control را فعال کنید تا Bucket بتواند خصوصی بماند).
+
+> لینک دعوت از آدرس همین صفحه ساخته می‌شود، پس بعد از انتشار نهایی، لینک‌ها را از آدرس اصلی بسازید.
+
+---
+
+## ✅ تست نهایی
+
+1. آدرس سایت را در دو مرورگر (یا یک پنجره عادی و یک Incognito) باز کنید.
+2. در هر کدام یک کاربر جدید بسازید (دکمه «ثبت‌نام» به‌صورت خودکار وارد هم می‌کند).
+3. در گفتگوی عمومی پیام بدهید.
+4. در کادر جستجو بخشی از شناسه کاربر دیگر را بنویسید و پیام خصوصی بفرستید.
+5. یک گروه بسازید، از «اطلاعات» لینک دعوت را کپی کنید و در مرورگر دوم باز کنید.
+6. یک کانال بسازید و بررسی کنید فقط مالک و مدیران می‌توانند پیام بگذارند.
+
+---
+
+## 📨 پروتکل پیام‌ها
+
+**از کلاینت به سرور** (همه با فیلد `action`):
+
+| action | پارامترها | کار |
+| ------ | --------- | --- |
+| `init` | ندارد | دریافت گروه‌ها و فهرست پیام‌های خصوصی |
+| `history` | `chatId`, `before` (اختیاری) | دریافت ۳۰ پیام |
+| `send` | `chatId`, `text` | ارسال پیام |
+| `search_users` | `q` (خالی یعنی آنلاین‌ها) | جستجوی کاربر |
+| `open_dm` | `user` | شروع گفتگوی خصوصی |
+| `create_room` | `name`, `type` (`group` یا `channel`) | ساخت گروه |
+| `join_room` | `code` | پیوستن با کد دعوت |
+| `room_info` | `roomId` | اطلاعات و اعضا |
+| `kick` | `roomId`, `user` | حذف عضو |
+| `set_role` | `roomId`, `user`, `role` | ارتقا یا عزل مدیر (فقط مالک) |
+| `rotate_invite` | `roomId` | ساخت لینک جدید |
+| `leave_room` / `delete_room` | `roomId` | خروج یا حذف گروه |
+| `ping` | ندارد | جلوگیری از قطع شدن اتصال بیکار |
+
+**از سرور به کلاینت:** `init`, `history`, `message`, `rooms`, `focus`, `dm_opened`, `users`, `room_info`, `room_event`, `removed`, `error`
+
+---
+
+## 💰 نکات Free Tier
+
+- DynamoDB با ظرفیت Provisioned زیر سقف ۲۵ واحد خواندن و نوشتن رایگان است (در این پروژه جمعاً ۱۵ واحد).
+- هر پیام یک نوشتن و چند خواندن کوچک مصرف می‌کند؛ برای یک کلاس معمولی مشکلی ندارد.
+- اتصال‌های باز در API Gateway بر اساس دقیقه حساب می‌شوند. پس از نمایش، پروژه را خاموش یا Stage را حذف کنید.
+- اکانت‌های جدیدتر AWS ممکن است Free plan مبتنی بر اعتبار داشته باشند و سهمیه‌ها فرق کند. حتماً در **Billing** یک **Budget** با هشدار ۱ دلاری بسازید.
+
+---
+
+## 🛠 عیب‌یابی
+
+| مشکل | بررسی |
+| ---- | ----- |
+| اتصال WebSocket برقرار نمی‌شود | متغیرهای `USER_POOL_ID`، `CLIENT_ID` و `COGNITO_REGION` در Lambda و مقدار `CONFIG` در صفحه |
+| وضعیت همیشه «در حال اتصال» است | لاگ Lambda در CloudWatch؛ مسیر `$connect` باید به `ChatHandler` وصل باشد |
+| خطای حساب تأیید نشده | مرحله ۵ (Trigger) |
+| پیام‌ها نمی‌رسند | سطح دسترسی `execute-api:ManageConnections` در Policy و نام Stage |
+| خطای AccessDenied در لاگ | ARN جدول و ایندکس در Policy مرحله ۳ |
+| جستجو کاربر را پیدا نمی‌کند | کاربر باید حداقل یک بار وارد شده باشد تا پروفایلش ساخته شود |
+
+---
+
+## 🧾 تغییرات نسبت به نسخه قبل
+
+- **یک جدول و یک Lambda** به‌جای دو جدول و سه تابع
+- نام کاربری از **توکن Cognito** گرفته می‌شود و جعل هویت ممکن نیست؛ اتصال بدون توکن معتبر رد می‌شود
+- تاریخچه اکنون **آخرین** پیام‌ها را برمی‌گرداند (قبلاً قدیمی‌ترین‌ها بود) و صفحه‌بندی دارد
+- تداخل پیام‌های هم‌زمان رفع شد (کلید مرتب‌سازی یکتا شده است)
+- اتصال‌های مرده پاک می‌شوند (حذف خودکار هنگام `GoneException` و TTL)
+- ارسال پیام موازی شد و `scan` روی کل جدول حذف شد
+- ورودی‌ها اعتبارسنجی می‌شوند (JSON خراب، متن خالی یا طولانی)
+- پیام‌های خصوصی ذخیره می‌شوند و بعد از رفرش باقی می‌مانند
+- فرانت‌اند با `textContent` ساخته شده و مشکل XSS ندارد؛ Ping دوره‌ای و اتصال مجدد خودکار دارد
+- IAM محدود به همین جدول است و لاگ CloudWatch فعال است
