@@ -85,7 +85,7 @@ flowchart LR
 
 ## 🗄 مرحله ۱: DynamoDB
 
-1. **DynamoDB → Tables → Create table**
+1. بخش **DynamoDB → Tables → Create table**
 2. نام جدول: `ChatApp`، Partition key: `PK` (String)، Sort key: `SK` (String)
 3. در **Table settings** گزینه **Customize settings** را بزنید.
 4. در **Read/write capacity settings** حالت **Provisioned** را انتخاب کنید، **Auto scaling** را برای هر دو خاموش کنید و مقدار **۱۰** برای Read و **۱۰** برای Write بگذارید. (حالت On-demand جزو سهمیه همیشه‌رایگان نیست.)
