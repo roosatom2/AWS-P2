@@ -1,0 +1,484 @@
+<!DOCTYPE html>
+<html lang="fa" dir="rtl">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>چت روم کلاس</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<script src="https://cdn.jsdelivr.net/npm/amazon-cognito-identity-js@6.3.7/dist/amazon-cognito-identity.min.js"></script>
+<style>
+@import url('https://v1.fontapi.ir/css/Vazir');
+body { font-family: 'Vazir', sans-serif; }
+</style>
+</head>
+<body class="h-[100dvh] bg-stone-100 text-stone-800">
+
+<div id="auth" class="h-full flex items-center justify-center p-4">
+  <div class="w-full max-w-sm bg-white rounded-2xl shadow-lg p-6 space-y-3">
+    <h1 class="text-xl font-bold text-center text-teal-700">چت روم کلاس</h1>
+    <input id="u" autocapitalize="off" autocomplete="username" placeholder="نام کاربری (انگلیسی کوچک)" class="w-full px-3 py-2 border rounded-lg text-sm">
+    <input id="p" type="password" autocomplete="current-password" placeholder="رمز عبور (حداقل ۶ حرف)" class="w-full px-3 py-2 border rounded-lg text-sm">
+    <div class="flex gap-2">
+      <button id="btn-login" class="flex-1 bg-teal-700 text-white py-2 rounded-lg hover:bg-teal-800">ورود</button>
+      <button id="btn-register" class="flex-1 border border-teal-700 text-teal-700 py-2 rounded-lg hover:bg-teal-50">ثبت‌نام</button>
+    </div>
+    <p id="auth-msg" class="text-sm text-center min-h-5"></p>
+  </div>
+</div>
+
+<div id="app" class="hidden h-full flex">
+  <aside id="side" class="flex md:flex flex-col w-full md:w-80 bg-white border-l">
+    <div class="p-3 flex items-center justify-between border-b">
+      <div><b id="me"></b> <span id="status" class="text-xs mr-1"></span></div>
+      <button id="btn-logout" class="text-xs text-stone-500 hover:text-red-600">خروج</button>
+    </div>
+    <div class="p-3 relative">
+      <input id="search" autocomplete="off" placeholder="جستجوی کاربر با شناسه..." class="w-full px-3 py-2 border rounded-lg text-sm">
+      <div id="results" class="hidden absolute inset-x-3 top-full z-10 bg-white border rounded-lg shadow-lg max-h-64 overflow-y-auto"></div>
+    </div>
+    <div class="px-3 pb-2 flex gap-2 text-xs">
+      <button id="btn-new" class="flex-1 border rounded-lg py-1.5 hover:bg-stone-50">+ گروه یا کانال</button>
+      <button id="btn-join" class="flex-1 border rounded-lg py-1.5 hover:bg-stone-50">ورود با کد دعوت</button>
+    </div>
+    <div id="chat-list" class="flex-1 overflow-y-auto pb-2"></div>
+  </aside>
+
+  <main id="pane" class="hidden flex md:flex flex-1 flex-col min-w-0">
+    <header class="px-3 py-2 bg-teal-700 text-white flex items-center gap-2">
+      <button id="btn-back" class="md:hidden text-xl px-2">→</button>
+      <div class="flex-1 min-w-0">
+        <div id="title" class="font-bold truncate"></div>
+        <div id="sub" class="text-xs text-teal-100"></div>
+      </div>
+      <button id="btn-info" class="hidden text-sm bg-white/20 rounded-lg px-3 py-1">اطلاعات</button>
+    </header>
+    <div id="msgs" class="flex-1 overflow-y-auto p-4 space-y-2 flex flex-col"></div>
+    <form id="composer" class="p-3 border-t bg-white flex gap-2">
+      <input id="text" autocomplete="off" class="flex-1 px-3 py-2 border rounded-lg text-sm disabled:bg-stone-100">
+      <button class="bg-teal-700 text-white px-5 rounded-lg hover:bg-teal-800">ارسال</button>
+    </form>
+  </main>
+</div>
+
+<div id="modal" class="hidden fixed inset-0 bg-black/40 flex items-center justify-center p-4 z-20">
+  <div id="modal-body" class="bg-white rounded-2xl p-5 w-full max-w-md max-h-[85vh] overflow-y-auto space-y-3"></div>
+</div>
+<div id="toast" class="hidden fixed bottom-6 left-1/2 -translate-x-1/2 bg-stone-800 text-white text-sm px-4 py-2 rounded-lg z-30"></div>
+
+<script>
+const CONFIG = {
+  wsUrl: 'wss://bswkkxkmazo5.execute-api.eu-north-1.amazonaws.com/production',
+  userPoolId: 'eu-north-1_VeusvsdvEBmfg',
+  clientId: '6fb4ahpdt7ja7asdqwszdtdr8indqlila4'
+};
+
+const pool = new AmazonCognitoIdentity.CognitoUserPool({ UserPoolId: CONFIG.userPoolId, ClientId: CONFIG.clientId });
+const $ = id => document.getElementById(id);
+const S = { me: '', ws: null, rooms: [], dms: [], chats: {}, active: null, unread: {}, retry: 0, ping: null, closing: false, joinCode: null, infoRoom: null };
+const inputCls = 'w-full px-3 py-2 border rounded-lg text-sm';
+const btnCls = 'w-full bg-teal-700 text-white py-2 rounded-lg hover:bg-teal-800 text-sm';
+const smallBtn = 'text-xs px-2 py-1 rounded border hover:bg-stone-50';
+
+const joinMatch = location.hash.match(/join=([\w-]+)/);
+if (joinMatch) S.joinCode = joinMatch[1];
+
+function el(tag, cls, text) {
+  const n = document.createElement(tag);
+  if (cls) n.className = cls;
+  if (text != null) n.textContent = text;
+  return n;
+}
+
+function toast(text) {
+  const t = $('toast');
+  t.textContent = text;
+  t.classList.remove('hidden');
+  clearTimeout(t.timer);
+  t.timer = setTimeout(() => t.classList.add('hidden'), 3500);
+}
+
+// ---- auth ----
+function authMsg(text, ok) {
+  const m = $('auth-msg');
+  m.textContent = text;
+  m.className = 'text-sm text-center min-h-5 ' + (ok ? 'text-teal-700' : 'text-red-600');
+}
+
+function creds() {
+  return { u: $('u').value.trim().toLowerCase(), p: $('p').value };
+}
+
+function login() {
+  const { u, p } = creds();
+  if (!u || !p) return authMsg('نام کاربری و رمز عبور را وارد کنید');
+  authMsg('در حال ورود...', true);
+  const user = new AmazonCognitoIdentity.CognitoUser({ Username: u, Pool: pool });
+  const details = new AmazonCognitoIdentity.AuthenticationDetails({ Username: u, Password: p });
+  user.authenticateUser(details, {
+    onSuccess: () => enter(u),
+    onFailure: err => authMsg(err.code === 'UserNotConfirmedException'
+      ? 'حساب تأیید نشده است؛ Trigger مرحله ۵ در README را بررسی کنید' : err.message)
+  });
+}
+
+function register() {
+  const { u, p } = creds();
+  if (!/^[a-z0-9_]{3,20}$/.test(u)) return authMsg('نام کاربری: ۳ تا ۲۰ حرف انگلیسی کوچک، عدد یا _');
+  const email = new AmazonCognitoIdentity.CognitoUserAttribute({ Name: 'email', Value: u + '@classdemo.local' });
+  authMsg('در حال ثبت‌نام...', true);
+  pool.signUp(u, p, [email], null, err => err ? authMsg(err.message) : login());
+}
+
+function freshToken(ok, fail) {
+  const user = pool.getCurrentUser();
+  if (!user) return fail();
+  user.getSession((err, session) => err || !session.isValid() ? fail() : ok(session.getIdToken().getJwtToken()));
+}
+
+function enter(name) {
+  S.me = name;
+  $('me').textContent = '@' + name;
+  $('auth').classList.add('hidden');
+  $('app').classList.remove('hidden');
+  connect();
+}
+
+function logout() {
+  S.closing = true;
+  const user = pool.getCurrentUser();
+  if (user) user.signOut();
+  if (S.ws) S.ws.close();
+  location.hash = '';
+  location.reload();
+}
+
+// ---- socket ----
+function setStatus(ok) {
+  $('status').textContent = ok ? '● آنلاین' : '● در حال اتصال...';
+  $('status').className = 'text-xs mr-1 ' + (ok ? 'text-green-600' : 'text-amber-600');
+}
+
+function connect() {
+  freshToken(token => {
+    const ws = new WebSocket(CONFIG.wsUrl + '?token=' + encodeURIComponent(token));
+    S.ws = ws;
+    ws.onopen = () => {
+      S.retry = 0;
+      setStatus(true);
+      send({ action: 'init' });
+      clearInterval(S.ping);
+      S.ping = setInterval(() => send({ action: 'ping' }), 240000);
+    };
+    ws.onmessage = e => handle(JSON.parse(e.data));
+    ws.onclose = () => {
+      clearInterval(S.ping);
+      setStatus(false);
+      if (!S.closing) setTimeout(connect, Math.min(1000 * 2 ** S.retry++, 15000));
+    };
+  }, logout);
+}
+
+function send(obj) {
+  if (S.ws && S.ws.readyState === 1) S.ws.send(JSON.stringify(obj));
+}
+
+function handle(m) {
+  switch (m.type) {
+    case 'init':
+      S.rooms = m.rooms;
+      S.dms = m.dms;
+      Object.values(S.chats).forEach(c => c.loaded = false);
+      select(S.active || 'public');
+      if (S.joinCode) {
+        send({ action: 'join_room', code: S.joinCode });
+        S.joinCode = null;
+        history.replaceState(null, '', location.pathname);
+      }
+      break;
+    case 'history': onHistory(m); break;
+    case 'message': onMessage(m); break;
+    case 'rooms':
+      S.rooms = m.rooms;
+      if (S.active.startsWith('room:') && !chatMeta(S.active)) open('public');
+      renderSide();
+      refreshHeader();
+      break;
+    case 'focus': open(m.chatId); break;
+    case 'dm_opened': addDm(m.user); open(m.chatId); break;
+    case 'users': renderResults(m); break;
+    case 'room_info': showInfo(m); break;
+    case 'room_event':
+      toast(m.text);
+      if (S.infoRoom === m.roomId) send({ action: 'room_info', roomId: m.roomId });
+      break;
+    case 'removed': toast(m.text); break;
+    case 'error': toast(m.message); break;
+  }
+}
+
+// ---- chats ----
+const chatOf = id => S.chats[id] || (S.chats[id] = { msgs: [], hasMore: false, loaded: false });
+const dmId = user => 'dm:' + [S.me, user].sort().join(':');
+const peerOf = id => id.split(':').slice(1).find(u => u !== S.me);
+
+function chatMeta(id) {
+  if (id === 'public') return { title: '🌐 گفتگوی عمومی', sub: 'همه کاربران آنلاین', canPost: true };
+  if (id.startsWith('dm:')) return { title: '@' + peerOf(id), sub: 'پیام خصوصی', canPost: true };
+  const r = S.rooms.find(r => 'room:' + r.id === id);
+  if (!r) return null;
+  return {
+    title: (r.type === 'channel' ? '📢 ' : '👥 ') + r.name,
+    sub: r.type === 'channel' ? 'کانال' : 'گروه',
+    canPost: r.type === 'group' || r.role !== 'member',
+    room: r
+  };
+}
+
+function select(id) {
+  if (!chatMeta(id)) id = 'public';
+  S.active = id;
+  S.unread[id] = 0;
+  const chat = chatOf(id);
+  if (!chat.loaded) {
+    chat.loaded = true;
+    send({ action: 'history', chatId: id });
+  }
+  refreshHeader();
+  renderMsgs(true);
+  renderSide();
+}
+
+function open(id) {
+  select(id);
+  $('side').classList.add('hidden');
+  $('pane').classList.remove('hidden');
+  $('text').focus();
+}
+
+function refreshHeader() {
+  const meta = chatMeta(S.active);
+  if (!meta) return;
+  $('title').textContent = meta.title;
+  $('sub').textContent = meta.sub;
+  $('btn-info').classList.toggle('hidden', !meta.room);
+  $('text').disabled = !meta.canPost;
+  $('text').placeholder = meta.canPost ? 'پیام خود را بنویسید...' : 'فقط مدیران کانال می‌توانند پیام بگذارند';
+}
+
+function addDm(user) {
+  if (!S.dms.some(d => d.user === user)) S.dms.push({ user, last: Date.now() });
+  renderSide();
+}
+
+function onHistory(m) {
+  const c = chatOf(m.chatId);
+  c.msgs = m.before ? m.messages.concat(c.msgs) : m.messages;
+  c.hasMore = m.hasMore;
+  if (m.chatId === S.active) renderMsgs(!m.before);
+}
+
+function onMessage(m) {
+  if (m.chatId.startsWith('dm:')) {
+    const peer = peerOf(m.chatId);
+    addDm(peer);
+    S.dms.find(d => d.user === peer).last = m.ts;
+  }
+  chatOf(m.chatId).msgs.push(m);
+  if (m.chatId === S.active) {
+    const box = $('msgs');
+    const nearBottom = box.scrollHeight - box.scrollTop - box.clientHeight < 120 || m.sender === S.me;
+    box.append(bubble(m));
+    if (nearBottom) box.scrollTop = box.scrollHeight;
+  } else if (m.sender !== S.me) {
+    S.unread[m.chatId] = (S.unread[m.chatId] || 0) + 1;
+  }
+  renderSide();
+}
+
+function bubble(m) {
+  const mine = m.sender === S.me;
+  const b = el('div', 'max-w-[80%] rounded-xl px-3 py-2 shadow-sm text-sm ' + (mine ? 'self-end bg-teal-100' : 'self-start bg-white'));
+  if (!mine && !S.active.startsWith('dm:')) {
+    const name = el('button', 'block text-xs font-bold text-teal-700 mb-0.5', '@' + m.sender);
+    name.onclick = () => send({ action: 'open_dm', user: m.sender });
+    b.append(name);
+  }
+  b.append(el('div', 'whitespace-pre-wrap break-words', m.text));
+  b.append(el('div', 'text-[10px] text-stone-400 mt-1', new Date(m.ts).toLocaleTimeString('fa-IR', { hour: '2-digit', minute: '2-digit' })));
+  return b;
+}
+
+function renderMsgs(toBottom) {
+  const box = $('msgs'), c = chatOf(S.active), prevHeight = box.scrollHeight;
+  box.replaceChildren();
+  if (c.hasMore) {
+    const more = el('button', 'self-center text-xs text-teal-700 py-1', 'پیام‌های قبلی');
+    more.onclick = () => send({ action: 'history', chatId: S.active, before: c.msgs[0].id });
+    box.append(more);
+  }
+  c.msgs.forEach(m => box.append(bubble(m)));
+  box.scrollTop = toBottom ? box.scrollHeight : box.scrollHeight - prevHeight;
+}
+
+function renderSide() {
+  const list = $('chat-list');
+  list.replaceChildren();
+  const section = (label, items) => {
+    if (!items.length) return;
+    list.append(el('div', 'px-4 pt-3 pb-1 text-xs text-stone-400', label));
+    items.forEach(i => list.append(row(i)));
+  };
+  section('عمومی', [{ id: 'public', label: '🌐 گفتگوی عمومی' }]);
+  section('گروه‌ها و کانال‌ها', S.rooms.map(r => ({ id: 'room:' + r.id, label: (r.type === 'channel' ? '📢 ' : '👥 ') + r.name })));
+  section('پیام‌های خصوصی', [...S.dms].sort((a, b) => b.last - a.last).map(d => ({ id: dmId(d.user), label: '@' + d.user })));
+}
+
+function row(i) {
+  const b = el('button', 'w-full text-right px-4 py-2 flex items-center justify-between hover:bg-stone-50 ' + (i.id === S.active ? 'bg-teal-50' : ''));
+  b.append(el('span', 'truncate', i.label));
+  if (S.unread[i.id]) b.append(el('span', 'bg-teal-700 text-white text-xs rounded-full px-2', S.unread[i.id]));
+  b.onclick = () => open(i.id);
+  return b;
+}
+
+// ---- user search ----
+let searchTimer;
+function searchUsers() {
+  clearTimeout(searchTimer);
+  searchTimer = setTimeout(() => send({ action: 'search_users', q: $('search').value }), 250);
+}
+
+function renderResults(m) {
+  const box = $('results');
+  box.replaceChildren();
+  box.classList.remove('hidden');
+  box.append(el('div', 'px-3 pt-2 text-xs text-stone-400', m.q ? 'نتایج جستجو' : 'کاربران آنلاین'));
+  if (!m.users.length) box.append(el('div', 'p-3 text-sm text-stone-400', 'کاربری پیدا نشد'));
+  m.users.forEach(u => {
+    const b = el('button', 'w-full text-right px-3 py-2 hover:bg-stone-50 flex items-center gap-2 text-sm');
+    b.append(el('span', 'w-2 h-2 rounded-full ' + (u.online ? 'bg-green-500' : 'bg-stone-300')), el('span', '', '@' + u.name));
+    b.onclick = () => {
+      box.classList.add('hidden');
+      $('search').value = '';
+      send({ action: 'open_dm', user: u.name });
+    };
+    box.append(b);
+  });
+}
+
+// ---- modals ----
+function modal(...nodes) {
+  $('modal-body').replaceChildren(...nodes);
+  $('modal').classList.remove('hidden');
+}
+
+function closeModal() {
+  $('modal').classList.add('hidden');
+  S.infoRoom = null;
+}
+
+function newRoomModal() {
+  const name = el('input', inputCls);
+  name.placeholder = 'نام گروه یا کانال';
+  name.maxLength = 40;
+  const type = el('select', inputCls);
+  type.innerHTML = '<option value="group">گروه (همه می‌توانند پیام بگذارند)</option><option value="channel">کانال (فقط مدیران پیام می‌گذارند)</option>';
+  const ok = el('button', btnCls, 'ساخت');
+  ok.onclick = () => { send({ action: 'create_room', name: name.value, type: type.value }); closeModal(); };
+  modal(el('h3', 'font-bold', 'ساخت گروه یا کانال'), name, type, ok);
+}
+
+function joinModal() {
+  const code = el('input', inputCls);
+  code.placeholder = 'کد یا لینک دعوت';
+  code.dir = 'ltr';
+  const ok = el('button', btnCls, 'پیوستن');
+  ok.onclick = () => {
+    const v = code.value.trim(), m = v.match(/join=([\w-]+)/);
+    send({ action: 'join_room', code: m ? m[1] : v });
+    closeModal();
+  };
+  modal(el('h3', 'font-bold', 'پیوستن با کد دعوت'), code, ok);
+}
+
+function showInfo(m) {
+  S.infoRoom = m.roomId;
+  const rank = { owner: 3, admin: 2, member: 1 };
+  const labels = { owner: 'مالک', admin: 'مدیر', member: 'عضو' };
+  const nodes = [
+    el('h3', 'font-bold text-lg', m.name),
+    el('div', 'text-xs text-stone-500', (m.kind === 'channel' ? 'کانال' : 'گروه') + ' - ' + m.members.length + ' عضو')
+  ];
+
+  if (m.invite) {
+    const link = location.origin + location.pathname + '#join=' + m.invite;
+    const field = el('input', inputCls);
+    field.value = link;
+    field.readOnly = true;
+    field.dir = 'ltr';
+    const copy = el('button', btnCls, 'کپی لینک دعوت');
+    copy.onclick = () => { field.select(); document.execCommand('copy'); toast('لینک کپی شد'); };
+    const rotate = el('button', smallBtn, 'ساخت لینک جدید (لینک قبلی باطل می‌شود)');
+    rotate.onclick = () => send({ action: 'rotate_invite', roomId: m.roomId });
+    nodes.push(field, copy, rotate);
+  }
+
+  const list = el('div', 'divide-y border rounded-lg');
+  m.members.forEach(u => {
+    const r = el('div', 'flex items-center gap-2 p-2 text-sm');
+    r.append(el('span', 'w-2 h-2 rounded-full ' + (u.online ? 'bg-green-500' : 'bg-stone-300')));
+    const name = el('button', 'flex-1 text-right', '@' + u.user);
+    if (u.user !== S.me) name.onclick = () => { closeModal(); send({ action: 'open_dm', user: u.user }); };
+    r.append(name, el('span', 'text-xs text-stone-400', labels[u.role]));
+    if (u.user !== S.me && rank[m.role] > rank[u.role]) {
+      if (m.role === 'owner') {
+        const next = u.role === 'admin' ? 'member' : 'admin';
+        const role = el('button', smallBtn, u.role === 'admin' ? 'عزل مدیر' : 'مدیر کن');
+        role.onclick = () => send({ action: 'set_role', roomId: m.roomId, user: u.user, role: next });
+        r.append(role);
+      }
+      const kick = el('button', smallBtn + ' text-red-600', 'حذف');
+      kick.onclick = () => confirm('حذف @' + u.user + ' از گروه؟') && send({ action: 'kick', roomId: m.roomId, user: u.user });
+      r.append(kick);
+    }
+    list.append(r);
+  });
+  nodes.push(list);
+
+  const exit = el('button', 'w-full text-sm text-red-600 border border-red-200 rounded-lg py-2 hover:bg-red-50',
+    m.role === 'owner' ? 'حذف گروه' : 'خروج از گروه');
+  exit.onclick = () => {
+    if (!confirm(m.role === 'owner' ? 'گروه و همه پیام‌هایش حذف شود؟' : 'از گروه خارج می‌شوید؟')) return;
+    send({ action: m.role === 'owner' ? 'delete_room' : 'leave_room', roomId: m.roomId });
+    closeModal();
+  };
+  nodes.push(exit);
+  modal(...nodes);
+  S.infoRoom = m.roomId;
+}
+
+// ---- events ----
+$('btn-login').onclick = login;
+$('btn-register').onclick = register;
+$('p').onkeydown = e => { if (e.key === 'Enter') login(); };
+$('btn-logout').onclick = logout;
+$('btn-new').onclick = newRoomModal;
+$('btn-join').onclick = joinModal;
+$('btn-back').onclick = () => { $('side').classList.remove('hidden'); $('pane').classList.add('hidden'); };
+$('btn-info').onclick = () => send({ action: 'room_info', roomId: chatMeta(S.active).room.id });
+$('modal').onclick = e => { if (e.target === $('modal')) closeModal(); };
+$('search').oninput = searchUsers;
+$('search').onfocus = searchUsers;
+document.addEventListener('click', e => { if (!$('search').parentElement.contains(e.target)) $('results').classList.add('hidden'); });
+$('composer').onsubmit = e => {
+  e.preventDefault();
+  const text = $('text').value.trim();
+  if (!text) return;
+  send({ action: 'send', chatId: S.active, text });
+  $('text').value = '';
+};
+
+freshToken(() => enter(pool.getCurrentUser().getUsername().toLowerCase()), () => {});
+</script>
+</body>
+</html>
