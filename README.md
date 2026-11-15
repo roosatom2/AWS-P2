@@ -86,24 +86,25 @@ flowchart LR
 ## 🗄 مرحله ۱: DynamoDB
 
 1. بخش **DynamoDB → Tables → Create table**
-2. نام جدول: `ChatApp`، Partition key: `PK` (String)، Sort key: `SK` (String)
-3. در **Table settings** گزینه **Customize settings** را بزنید.
-4. در **Read/write capacity settings** حالت **Provisioned** را انتخاب کنید، **Auto scaling** را برای هر دو خاموش کنید و مقدار **۱۰** برای Read و **۱۰** برای Write بگذارید. (حالت On-demand جزو سهمیه همیشه‌رایگان نیست.)
-5. جدول را بسازید.
-6. وارد جدول شوید: **Indexes → Create index**
+2. نام جدول: `ChatApp`
+Partition key: `PK` (String)، Sort key: `SK` (String)
+4. در **Table settings** گزینه **Customize settings** را بزنید.
+5. در **Read/write capacity settings** حالت **Provisioned** را انتخاب کنید، **Auto scaling** را برای هر دو خاموش کنید و مقدار **۱۰** برای Read و **۱۰** برای Write بگذارید. (حالت On-demand جزو سهمیه همیشه‌رایگان نیست.)
+6. جدول را بسازید.
+7. وارد جدول شوید: **Indexes → Create index**
    - Partition key: `GSI1PK` (String)، Sort key: `GSI1SK` (String)
    - Index name: `GSI1`، Projection: **All**
    - ظرفیت Provisioned برابر **۵** و **۵**
-7. **Additional settings → Time to Live (TTL) → Turn on** و نام صفت را `expiresAt` بگذارید. با این کار اتصال‌های مرده و پیام‌های قدیمی (بعد از ۳۰ روز) خودکار پاک می‌شوند.
+8. بخش **Additional settings → Time to Live (TTL) → Turn on** و نام صفت را `expiresAt` بگذارید. با این کار اتصال‌های مرده و پیام‌های قدیمی (بعد از ۳۰ روز) خودکار پاک می‌شوند.
 
 ---
 
 ## 🔐 مرحله ۲: Cognito
 
 1. **Cognito → Create user pool**
-2. نوع برنامه: **Single-page application (SPA)**، نام: `ClassChatApp`
-3. Sign-in identifiers: فقط **User name**
-4. Required attributes: همان `email` پیش‌فرض بماند (صفحه به‌صورت خودکار یک ایمیل ساختگی می‌فرستد)
+2. نوع برنامه: **Single-page application (SPA)** ، نام: `ClassChatApp`
+3. بخش Sign-in identifiers: فقط **User name**
+4. بخش Required attributes: همان `email` پیش‌فرض بماند (صفحه به‌صورت خودکار یک ایمیل ساختگی می‌فرستد)
 5. Return URL: `http://localhost` (فقط برای ساخت لازم است)
 6. پس از ساخت، رمز را ساده‌تر کنید: **Authentication → Authentication methods → Password policy → Edit** → حالت **Custom**، حداقل طول **۶** و همه تیک‌های الزامی (عدد، حروف بزرگ و ...) خاموش.
 7. **MFA** را روی **No MFA** بگذارید.
